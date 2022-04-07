@@ -1,0 +1,306 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Cloud fromation template for Winter Cloud Project Group_53
+
+Parameters:
+    CodeBucket:
+        Description: cloudformation_wintecloud
+        Type: String
+
+    Lambda1Code:
+        Description: extractkeyvalue_wintercloud
+        Type: String
+
+    Lambda2Code:
+        Description: converttocsv_wintercloud
+        Type: String
+
+    LayerLambda:
+        Description: lambdalayer_wintercloud
+        Type: String
+
+Resources:
+  VPCWinterCloud:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: 10.0.1.0/16 
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags:
+        - Key: Name
+          Value: WinterCloud VPC
+
+  InternetGatewayWinterCloud:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Name
+          Value: WinterCloud Project Gateway
+
+  InternetGatewayAttaching:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGatewayWinterCloud
+      VpcId: !Ref VPCWinterCloud
+
+  PublicSubnetForEC2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPCWinterCloud
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: 10.0.3.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: WinterCloud EC2 Public Subnet
+
+  PrivateSubnetForEC2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPCWinterCloud
+      AvailabilityZone: !Select [ 0, !GetAZs  '' ]
+      CidrBlock: 10.0.4.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: WinterCloud S3 Private Subnet
+
+  PublicRoutingTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPCWinterCloud
+      Tags:
+        - Key: Name
+          Value: WinterCloud Public Routes
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttaching
+    Properties:
+      RouteTableId: !Ref PublicRoutingTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGatewayWinterCloud
+
+  PublicSubnetRouteTableLinking:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRoutingTable
+      SubnetId: !Ref PublicSubnetForEC2
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: VPCWinterCloud
+      Tags:
+        - Key: Name
+          Value: WinterCloud Private Routes
+
+  PublicEC2SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: "security-group-for-ec2"
+      GroupDescription: "Allowing HTTP/HTTPS and SSH rules for inbound and outbound traffic."
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref VPCWinterCloud
+
+  PrivateEC2SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Enable HTTP from 0.0.0.0/0
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref VPCWinterCloud 
+
+  S3FullAccessIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+
+  PublicEC2InstanceWinterCloud:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
+      InstanceType: t2.micro
+      SecurityGroupIds: !Ref PublicEC2SecurityGroup
+      SubnetId: !Ref PublicSubnetForEC2
+      KeyName: sandeepkey
+      Tags:
+       - Key: Name
+         Value: WinterCloud Project EC2
+
+  EIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: standard
+      InstanceId: !Ref PublicEC2InstanceWinterCloud
+
+  PrivateEC2InstanceWinterCloud:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
+      InstanceType: t2.micro
+      SubnetId: !Ref PrivateSubnetForEC2
+      SecurityGroupIds: 
+        - !Ref PrivateEC2SecurityGroup
+      KeyName: sandeepkey
+      Tags:
+       - Key: Name
+         Value: WinterCloud Project EC2     
+
+  VPCS3Endpoint:
+    Type: 'AWS::EC2::VPCEndpoint'
+    Properties:
+      RouteTableIds:
+        - !Ref PrivateRouteTable
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcId: !Ref VPCWinterCloud
+
+  S3Bucket:
+      Type: AWS::S3::Bucket
+      DependsOn: 
+          - Lambda1
+      Properties:
+          BucketName: !Join [ '-', [ !Ref AWS::StackName, !Ref AWS::Region, !Ref AWS::AccountId ] ]
+          NotificationConfiguration:
+              LambdaConfigurations:
+                  - Event: s3:ObjectCreated:*
+                    Function: !GetAtt Lambda1.Arn
+                    Filter:
+                        S3Key:
+                            Rules:
+                                - Name: prefix
+                                  Value: input-folder/
+                                - Name: suffix
+                                  Value: .pdf
+
+  Lambda1IAMRole:
+      Type: AWS::IAM::Role
+      Properties:
+          ManagedPolicyArns: 
+              - arn:aws:iam::aws:policy/AWSLambdaExecute
+              - arn:aws:iam::aws:policy/AmazonTextractFullAccess
+
+          AssumeRolePolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+              - Effect: Allow
+                Principal:
+                  Service:
+                  - lambda.amazonaws.com
+                Action:
+                - sts:AssumeRole                             
+
+  Lambda2IAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+        ManagedPolicyArns: 
+            - arn:aws:iam::aws:policy/service-role/AmazonTextractServiceRole
+            - arn:aws:iam::aws:policy/AmazonSNSFullAccess
+
+        AssumeRolePolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                - textract.amazonaws.com
+              Action:
+              - sts:AssumeRole
+
+  Lambda1:
+      Type: AWS::Lambda::Function
+      Properties:
+          Handler: lambda_function.lambda_handler
+          Runtime: python3.9
+          Role: !GetAtt Lambda1IAMRole.Arn
+          Environment:
+              Variables:
+                  OUTPUTBUCKET: !Join [ '-', [ !Ref AWS::StackName, !Ref AWS::Region, !Ref AWS::AccountId ] ]
+                  S3_PREFIX: 'textract-output'
+                  SNS_ARN: !Ref SNSTopic
+                  SNS_ROLE: !GetAtt Lambda2IAMRole.Arn
+          Code:
+              S3Bucket: !Ref CodeBucket
+              S3Key: !Ref Lambda1Code
+
+  PythonPandasLayer:
+      Type: AWS::Lambda::LayerVersion
+      Properties:
+          CompatibleRuntimes:
+            - python3.9
+          Content:
+            S3Bucket: !Ref CodeBucket
+            S3Key: !Ref LayerLambda
+          Description: Python Pandas Layer
+
+  Lambda2:
+      Type: AWS::Lambda::Function
+      Properties:
+          Handler: lambda_function.lambda_handler
+          Runtime: python3.9
+          Timeout: 20
+          Layers:
+             - !Ref PythonPandasLayer
+          Role: !GetAtt Lambda1IAMRole.Arn
+          Environment:
+              Variables:
+                  BUCKET_NAME: !Join [ '-', [ !Ref AWS::StackName, !Ref AWS::Region, !Ref AWS::AccountId ] ]
+          Code:
+              S3Bucket: !Ref CodeBucket
+              S3Key: !Ref Lambda2Code
+
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    DependsOn: 
+      - Lambda2
+    Properties:
+        Subscription:
+          - Protocol: lambda
+            Endpoint: !GetAtt Lambda2.Arn               
+
+  SNSInvokeLambda2Permission:
+      Type: AWS::Lambda::Permission
+      DependsOn: 
+          - Lambda2
+      Properties:
+          Action: lambda:InvokeFunction
+          FunctionName: !GetAtt Lambda2.Arn
+          Principal: sns.amazonaws.com
+
+  S3InvokeLambda1Permission:
+      Type: AWS::Lambda::Permission
+      DependsOn: 
+          - Lambda1
+      Properties:
+          Action: lambda:InvokeFunction
+          FunctionName: !Ref Lambda1
+          Principal: s3.amazonaws.com
+          SourceArn: !Sub
+              - 'arn:aws:s3:::${S3Bucket}'
+              - { S3Bucket: !Join [ '-', [ !Ref AWS::StackName, !Ref AWS::Region, !Ref AWS::AccountId ] ] }
